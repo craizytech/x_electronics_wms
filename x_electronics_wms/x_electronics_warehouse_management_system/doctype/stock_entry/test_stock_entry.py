@@ -26,7 +26,7 @@ from x_electronics_wms.x_electronics_warehouse_management_system.utils.test_help
 )
 
 
-# Layer 1 — Validation Tests
+# Validation Tests
 # Verify that the validate() method rejects bad inputs before any DB write.
 # None of these tests should produce a Stock Ledger Entry.
 
@@ -269,7 +269,7 @@ class TestTransferValidation(unittest.TestCase):
             }).insert(ignore_permissions=True)
 
 
-# Layer 2 — Business Logic Tests
+# Business Logic Tests
 # Verify that submitting a Stock Entry creates the correct ledger entries.
 
 class TestReceiptLogic(unittest.TestCase):
@@ -476,7 +476,7 @@ class TestTransferLogic(unittest.TestCase):
         self.assertAlmostEqual(src_rate, dst_rate, places=2)
 
 
-# Layer 3 — Moving Average Valuation
+# Moving Average Valuation
 
 class TestMovingAverage(unittest.TestCase):
     """
@@ -577,7 +577,7 @@ class TestMovingAverage(unittest.TestCase):
         self.assertAlmostEqual(value, qty * rate, places=2)
 
 
-# Layer 4 — Cancellation
+# Cancellation
 
 class TestCancellation(unittest.TestCase):
     """

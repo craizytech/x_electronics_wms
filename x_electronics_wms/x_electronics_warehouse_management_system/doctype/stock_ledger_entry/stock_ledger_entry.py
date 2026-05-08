@@ -19,7 +19,6 @@ class StockLedgerEntry(Document):
 		posting_datetime: DF.Datetime
 		qty_change: DF.Float
 		stock_value: DF.Float
-		valuation_method: DF.Literal["Moving Average", "FIFO", "LIFO"]
 		valuation_rate: DF.Float
 		voucher_no: DF.Data | None
 		voucher_type: DF.Data | None

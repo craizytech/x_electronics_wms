@@ -38,7 +38,8 @@
    "fieldname": "rate",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Rate"
+   "label": "Rate",
+   "reqd": 1
   },
   {
    "fieldname": "s_warehouse",
@@ -59,7 +60,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-05-08 10:46:06.856398",
+ "modified": "2026-05-08 10:13:05.158209",
  "modified_by": "Administrator",
  "module": "X Electronics Warehouse Management System",
  "name": "Stock Entry Detail",

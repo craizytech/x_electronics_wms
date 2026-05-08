@@ -40,6 +40,8 @@ class StockEntry(Document):
                     frappe.throw(_(f"Row {row.idx}: Source Warehouse is required for Consume."))
                 if row.t_warehouse:
                     frappe.throw(_(f"Row {row.idx}: Target Warehouse must be empty for Consume."))
+                if not row.rate or row.rate <= 0:
+                    frappe.throw(_(f"Row {row.idx}: Rate is required for Consume."))
 
             elif self.stock_entry_type == "Transfer":
                 if not row.s_warehouse:

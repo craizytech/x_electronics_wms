@@ -18,6 +18,7 @@ class Item(Document):
 		item_code: DF.Data
 		item_name: DF.Data
 		stock_uom: DF.Data
+		valuation_method: DF.Literal["Moving Average", "FIFO", "LIFO"]
 	# end: auto-generated types
 
 	pass

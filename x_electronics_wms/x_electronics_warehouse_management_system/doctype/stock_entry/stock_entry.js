@@ -2,6 +2,29 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Stock Entry", {
+
+    setup(frm) {
+        // Prefill only for new unsaved docs
+        if (frm.is_new()) {
+
+            // Current date
+            if (!frm.doc.posting_date) {
+                frm.set_value(
+                    "posting_date",
+                    frappe.datetime.get_today()
+                );
+            }
+
+            // Current time
+            if (!frm.doc.posting_time) {
+                frm.set_value(
+                    "posting_time",
+                    frappe.datetime.now_time()
+                );
+            }
+        }
+    },
+
     refresh(frm) {
         toggle_rate_required(frm);
     },
@@ -11,6 +34,7 @@ frappe.ui.form.on("Stock Entry", {
     }
 });
 
+
 function toggle_rate_required(frm) {
 
     let required =
@@ -18,10 +42,10 @@ function toggle_rate_required(frm) {
         frm.doc.stock_entry_type === "Receipt";
 
     frm.fields_dict.items.grid.update_docfield_property(
-        'rate',
-        'reqd',
+        "rate",
+        "reqd",
         required ? 1 : 0
     );
 
-    frm.refresh_field('items');
+    frm.refresh_field("items");
 }

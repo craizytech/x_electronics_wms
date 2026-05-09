@@ -47,7 +47,6 @@
    "label": "Is Stock Item"
   },
   {
-   "default": "Moving Average",
    "fieldname": "valuation_method",
    "fieldtype": "Select",
    "label": "Valuation Method",
@@ -57,7 +56,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-08 20:51:25.456044",
+ "modified": "2026-05-09 20:49:53.887359",
  "modified_by": "Administrator",
  "module": "X Electronics Warehouse Management System",
  "name": "Item",

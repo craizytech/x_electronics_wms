@@ -226,32 +226,44 @@ def get_valuation_rate(item, warehouse):
 
 def cancel_and_delete_stock_entry(doc):
     """
-    Safely cancel and delete a Stock Entry and all its linked ledger entries.
-
-    Handles all docstatus states:
-        - docstatus=0 (draft): just delete
-        - docstatus=1 (submitted): cancel first, then delete
-        - docstatus=2 (already cancelled): just delete
-
-    Linked SLEs are cancelled via the on_cancel hook automatically.
-
-    Args:
-        doc: A Stock Entry frappe document (submitted or draft).
+    Fully remove a Stock Entry and all ledger traces from DB.
+    Intended ONLY for tests.
     """
     try:
+        if isinstance(doc, str):
+            doc = frappe.get_doc("Stock Entry", doc)
+
         doc.reload()
+
+        voucher_no = doc.name
+
+        # Cancel submitted docs first
         if doc.docstatus == 1:
             doc.cancel()
+
+        # Delete ALL linked SLEs regardless of status
+        sle_names = frappe.get_all(
+            "Stock Ledger Entry",
+            filters={"voucher_no": voucher_no},
+            pluck="name"
+        )
+
+        for sle_name in sle_names:
+            frappe.db.delete("Stock Ledger Entry", {"name": sle_name})
+
+        # Delete stock entry itself
         frappe.delete_doc(
-            "Stock Entry", doc.name,
+            "Stock Entry",
+            voucher_no,
             force=True,
             ignore_permissions=True
         )
+
+        frappe.db.commit()
+
     except Exception:
-        # If doc was already deleted by another cleanup path, continue silently
-        pass
-
-
+        frappe.db.rollback()
+        raise
 def delete_test_records(doctype_name_pairs):
     """
     Delete a list of test records by (doctype, name) pairs.
@@ -282,3 +294,20 @@ def delete_test_records(doctype_name_pairs):
                 )
         except Exception:
             pass
+
+
+def delete_ledger_entries(item, warehouse):
+    """
+    Hard delete ALL ledger entries for test isolation.
+    ONLY for tests.
+    """
+
+    frappe.db.delete(
+        "Stock Ledger Entry",
+        {
+            "item": item,
+            "warehouse": warehouse,
+        }
+    )
+
+    frappe.db.commit()

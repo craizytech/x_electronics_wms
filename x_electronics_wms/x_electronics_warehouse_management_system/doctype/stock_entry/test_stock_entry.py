@@ -23,6 +23,7 @@ from x_electronics_wms.x_electronics_warehouse_management_system.utils.test_help
     get_valuation_rate,
     cancel_and_delete_stock_entry,
     delete_test_records,
+    delete_ledger_entries
 )
 
 
@@ -650,3 +651,323 @@ class TestCancellation(unittest.TestCase):
         doc.cancel()
         _, value_after = get_balance("_Test Item CA", "_Test WH CA")
         self.assertAlmostEqual(value_after, value_before, places=2)
+
+# FIFO Valuation Tests
+
+class TestFIFOValuation(unittest.TestCase):
+    """
+    FIFO: oldest layers are consumed first.
+
+    Setup:
+        Receipt 1: 10 units @ 100  (oldest layer)
+        Receipt 2: 10 units @ 200  (newer layer)
+        Consume 5                  → must come from layer 1 @ 100
+        Consume 10                 → 5 remaining from layer 1 @ 100,
+                                     then 5 from layer 2 @ 200
+                                     blended rate = (5×100 + 5×200) / 10 = 150
+
+    FIFO does NOT change the valuation rate on the item — it determines
+    which layer's cost is used when stock leaves.
+    """
+
+    def setUp(self):
+        self.item      = make_item("_Test Item FIFO")
+        self.warehouse = make_warehouse("_Test WH FIFO")
+
+        # Delete any SLEs left by previous test runs before setting the valuation method
+        delete_ledger_entries("_Test Item FIFO", "_Test WH FIFO")
+
+        frappe.db.set_value("Item", "_Test Item FIFO", "valuation_method", "FIFO")
+        frappe.db.commit()
+
+        self.entries = []
+
+    def tearDown(self):
+        for doc in self.entries:
+            cancel_and_delete_stock_entry(doc)
+        delete_ledger_entries("_Test Item FIFO", "_Test WH FIFO")
+        delete_test_records([
+            ("Item",      "_Test Item FIFO"),
+            ("Warehouse", "_Test WH FIFO"),
+        ])
+        frappe.db.commit()
+
+    def test_fifo_first_consume_uses_oldest_layer(self):
+        """
+        With two layers, consuming 5 units must use the oldest layer rate (100).
+        Total value removed = 5 × 100 = 500.
+        Remaining value = (10×100 + 10×200) - 500 = 2500.
+        """
+        doc1 = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 100)
+        doc2 = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 200)
+        self.entries.extend([doc1, doc2])
+
+        qty_before, value_before = get_balance("_Test Item FIFO", "_Test WH FIFO")
+
+        doc3 = make_consume("_Test Item FIFO", "_Test WH FIFO", 5)
+        self.entries.append(doc3)
+
+        qty_after, value_after = get_balance("_Test Item FIFO", "_Test WH FIFO")
+
+        # Qty reduced by 5
+        self.assertAlmostEqual(qty_before - qty_after, 5, places=2)
+        # Value reduced by 5 × 100 = 500 (oldest layer)
+        self.assertAlmostEqual(value_before - value_after, 500, places=2)
+
+    def test_fifo_consume_spans_two_layers(self):
+        """
+        Consume 15 units:
+            5 remaining from layer 1 (@ 100) = 500
+            10 from layer 2 (@ 200)          = 2000
+            total value removed              = 2500
+            blended rate                     = 2500 / 15 = 166.67
+        """
+        doc1 = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 100)
+        doc2 = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 200)
+        # First consume 5 to exhaust part of layer 1
+        doc3 = make_consume("_Test Item FIFO", "_Test WH FIFO", 5)
+        self.entries.extend([doc1, doc2, doc3])
+
+        _, value_before = get_balance("_Test Item FIFO", "_Test WH FIFO")
+
+        # Now consume 15 — spans the rest of layer 1 and all of layer 2
+        doc4 = make_consume("_Test Item FIFO", "_Test WH FIFO", 15)
+        self.entries.append(doc4)
+
+        _, value_after = get_balance("_Test Item FIFO", "_Test WH FIFO")
+        value_removed = value_before - value_after
+
+        # 5 @ 100 + 10 @ 200 = 500 + 2000 = 2500
+        self.assertAlmostEqual(value_removed, 2500, places=2)
+
+    def test_fifo_valuation_method_stamped_on_sle(self):
+        """SLEs created for a FIFO item must record valuation_method = FIFO."""
+        doc = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 100)
+        self.entries.append(doc)
+
+        method = frappe.db.get_value(
+            "Stock Ledger Entry",
+            {"voucher_no": doc.name, "docstatus": 1},
+            "valuation_method"
+        )
+        self.assertEqual(method, "FIFO")
+
+    def test_fifo_total_value_conservation(self):
+        """
+        Total value received must equal value remaining + value consumed.
+        Value is conserved — FIFO distributes it, not creates or destroys it.
+        """
+        doc1 = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 100)
+        doc2 = make_receipt("_Test Item FIFO", "_Test WH FIFO", 10, 200)
+        self.entries.extend([doc1, doc2])
+
+        total_received = (10 * 100) + (10 * 200)  # 3000
+
+        doc3 = make_consume("_Test Item FIFO", "_Test WH FIFO", 8)
+        self.entries.append(doc3)
+
+        _, remaining_value = get_balance("_Test Item FIFO", "_Test WH FIFO")
+
+        consumed_value = frappe.db.sql("""
+            SELECT COALESCE(SUM(stock_value), 0) AS val
+            FROM `tabStock Ledger Entry`
+            WHERE item = '_Test Item FIFO'
+              AND warehouse = '_Test WH FIFO'
+              AND qty_change < 0
+              AND docstatus = 1
+        """, as_dict=True)[0].val or 0
+
+        self.assertAlmostEqual(
+            remaining_value + abs(consumed_value),
+            total_received,
+            places=2
+        )
+
+
+# LIFO Valuation Tests
+
+class TestLIFOValuation(unittest.TestCase):
+    """
+    LIFO: newest layers are consumed first.
+
+    Setup:
+        Receipt 1: 10 units @ 100  (oldest — consumed last)
+        Receipt 2: 10 units @ 200  (newest — consumed first)
+        Consume 5                  → must come from layer 2 @ 200
+        Value removed              = 5 × 200 = 1000
+    """
+
+    def setUp(self):
+        self.item      = make_item("_Test Item LIFO")
+        self.warehouse = make_warehouse("_Test WH LIFO")
+
+        delete_ledger_entries("_Test Item LIFO", "_Test WH LIFO")
+
+        frappe.db.set_value("Item", "_Test Item LIFO", "valuation_method", "LIFO")
+        frappe.db.commit()
+
+        self.entries = []
+
+    def tearDown(self):
+        for doc in self.entries:
+            cancel_and_delete_stock_entry(doc)
+        delete_ledger_entries("_Test Item LIFO", "_Test WH LIFO")
+        delete_test_records([
+            ("Item",      "_Test Item LIFO"),
+            ("Warehouse", "_Test WH LIFO"),
+        ])
+        frappe.db.commit()
+
+    def test_lifo_first_consume_uses_newest_layer(self):
+        """
+        With two layers, consuming 5 units must use the newest layer rate (200).
+        Total value removed = 5 × 200 = 1000.
+        """
+        doc1 = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 100)
+        doc2 = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 200)
+        self.entries.extend([doc1, doc2])
+
+        _, value_before = get_balance("_Test Item LIFO", "_Test WH LIFO")
+
+        doc3 = make_consume("_Test Item LIFO", "_Test WH LIFO", 5)
+        self.entries.append(doc3)
+
+        _, value_after = get_balance("_Test Item LIFO", "_Test WH LIFO")
+
+        # Value removed must be 5 × 200 = 1000 (newest layer)
+        self.assertAlmostEqual(value_before - value_after, 1000, places=2)
+
+    def test_lifo_consume_spans_two_layers(self):
+        """
+        Consume 15:
+            10 from layer 2 (@ 200) = 2000  (newest, consumed first)
+             5 from layer 1 (@ 100) =  500  (oldest, consumed after)
+            total value removed     = 2500
+        """
+        doc1 = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 100)
+        doc2 = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 200)
+        self.entries.extend([doc1, doc2])
+
+        _, value_before = get_balance("_Test Item LIFO", "_Test WH LIFO")
+
+        doc3 = make_consume("_Test Item LIFO", "_Test WH LIFO", 15)
+        self.entries.append(doc3)
+
+        _, value_after = get_balance("_Test Item LIFO", "_Test WH LIFO")
+
+        # 10 @ 200 + 5 @ 100 = 2000 + 500 = 2500
+        self.assertAlmostEqual(value_before - value_after, 2500, places=2)
+
+    def test_lifo_valuation_method_stamped_on_sle(self):
+        """SLEs for a LIFO item must record valuation_method = LIFO."""
+        doc = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 100)
+        self.entries.append(doc)
+
+        method = frappe.db.get_value(
+            "Stock Ledger Entry",
+            {"voucher_no": doc.name, "docstatus": 1},
+            "valuation_method"
+        )
+        self.assertEqual(method, "LIFO")
+
+    def test_lifo_vs_fifo_different_values_same_data(self):
+        """
+        FIFO and LIFO must produce DIFFERENT consumed values for the same
+        transactions when prices differ between layers. This test confirms
+        the two methods are genuinely different, not aliases of each other.
+
+        Setup: 10 @ 100, then 10 @ 200, consume 5.
+        FIFO value removed: 5 × 100 = 500
+        LIFO value removed: 5 × 200 = 1000
+        """
+        # FIFO comparison item — purge first to guarantee clean state
+        make_item("_Test Item FIFO Compare")
+        make_warehouse("_Test WH FIFO Compare")
+        delete_ledger_entries("_Test Item FIFO Compare", "_Test WH FIFO Compare")
+        frappe.db.set_value("Item", "_Test Item FIFO Compare", "valuation_method", "FIFO")
+        frappe.db.commit()
+
+        r1 = make_receipt("_Test Item FIFO Compare", "_Test WH FIFO Compare", 10, 100)
+        r2 = make_receipt("_Test Item FIFO Compare", "_Test WH FIFO Compare", 10, 200)
+        _, v_before_fifo = get_balance("_Test Item FIFO Compare", "_Test WH FIFO Compare")
+        c1 = make_consume("_Test Item FIFO Compare", "_Test WH FIFO Compare", 5)
+        _, v_after_fifo = get_balance("_Test Item FIFO Compare", "_Test WH FIFO Compare")
+        fifo_removed = v_before_fifo - v_after_fifo
+
+        # LIFO item — already purged by setUp, but purge again to be safe
+        delete_ledger_entries("_Test Item LIFO", "_Test WH LIFO")
+        frappe.db.commit()
+
+        r3 = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 100)
+        r4 = make_receipt("_Test Item LIFO", "_Test WH LIFO", 10, 200)
+        self.entries.extend([r3, r4])
+        _, v_before_lifo = get_balance("_Test Item LIFO", "_Test WH LIFO")
+        c2 = make_consume("_Test Item LIFO", "_Test WH LIFO", 5)
+        self.entries.append(c2)
+        _, v_after_lifo = get_balance("_Test Item LIFO", "_Test WH LIFO")
+        lifo_removed = v_before_lifo - v_after_lifo
+
+        # FIFO should remove less value (cheap old stock first)
+        self.assertAlmostEqual(fifo_removed, 500, places=2)
+        # LIFO should remove more value (expensive new stock first)
+        self.assertAlmostEqual(lifo_removed, 1000, places=2)
+        # They must be different
+        self.assertNotAlmostEqual(fifo_removed, lifo_removed, places=2)
+
+        # Cleanup comparison items
+        for doc in [r1, r2, c1]:
+            cancel_and_delete_stock_entry(doc)
+        delete_ledger_entries("_Test Item FIFO Compare", "_Test WH FIFO Compare")
+        delete_test_records([
+            ("Item",      "_Test Item FIFO Compare"),
+            ("Warehouse", "_Test WH FIFO Compare"),
+        ])
+        frappe.db.commit()
+
+# Valuation Method Lock Tests
+
+class TestValuationMethodLock(unittest.TestCase):
+    """
+    Once an item has ledger entries, its valuation method cannot be changed.
+    This prevents historical ledger inconsistency.
+    """
+
+    def setUp(self):
+        self.item      = make_item("_Test Item VML")
+        self.warehouse = make_warehouse("_Test WH VML")
+        self.entries   = []
+
+    def tearDown(self):
+        for doc in self.entries:
+            cancel_and_delete_stock_entry(doc)
+        delete_test_records([
+            ("Item",      "_Test Item VML"),
+            ("Warehouse", "_Test WH VML"),
+        ])
+
+    def test_valuation_method_locked_after_first_transaction(self):
+        """
+        Attempting to change valuation method after a receipt exists
+        must raise a ValidationError.
+        """
+        doc = make_receipt("_Test Item VML", "_Test WH VML", 10, 100)
+        self.entries.append(doc)
+
+        item_doc = frappe.get_doc("Item", "_Test Item VML")
+        item_doc.valuation_method = "FIFO"
+
+        with self.assertRaises(frappe.ValidationError):
+            item_doc.save()
+
+    def test_valuation_method_changeable_before_transactions(self):
+        """
+        Valuation method CAN be changed when no ledger entries exist yet.
+        """
+        item_doc = frappe.get_doc("Item", "_Test Item VML")
+        item_doc.valuation_method = "FIFO"
+        # Should not raise
+        item_doc.save()
+        self.assertEqual(
+            frappe.db.get_value("Item", "_Test Item VML", "valuation_method"),
+            "FIFO"
+        )

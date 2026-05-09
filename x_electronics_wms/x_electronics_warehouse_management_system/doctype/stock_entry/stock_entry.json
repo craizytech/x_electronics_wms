@@ -1,6 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "Stock-Entry-.#",
  "creation": "2026-04-03 22:32:21.516194",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -60,10 +61,11 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-03 22:37:28.563341",
+ "modified": "2026-05-09 22:22:35.925649",
  "modified_by": "Administrator",
  "module": "X Electronics Warehouse Management System",
  "name": "Stock Entry",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

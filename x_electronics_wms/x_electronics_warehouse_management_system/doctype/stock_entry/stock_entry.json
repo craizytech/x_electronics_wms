@@ -10,6 +10,10 @@
   "stock_entry_type",
   "posting_date",
   "posting_time",
+  "column_break_qn9l",
+  "default_source_wh",
+  "default_target_wh",
+  "section_break_xisl",
   "items",
   "amended_from"
  ],
@@ -28,6 +32,7 @@
    "reqd": 1
   },
   {
+   "default": "Today",
    "fieldname": "posting_date",
    "fieldtype": "Date",
    "in_list_view": 1,
@@ -35,8 +40,10 @@
    "reqd": 1
   },
   {
+   "default": "Now",
    "fieldname": "posting_time",
    "fieldtype": "Time",
+   "hidden": 1,
    "label": "Posting Time"
   },
   {
@@ -55,13 +62,33 @@
    "print_hide": 1,
    "read_only": 1,
    "search_index": 1
+  },
+  {
+   "fieldname": "column_break_qn9l",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "default_source_wh",
+   "fieldtype": "Link",
+   "label": "Default Source WH",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "default_target_wh",
+   "fieldtype": "Link",
+   "label": "Default Target WH",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "section_break_xisl",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-05-09 22:22:35.925649",
+ "modified": "2026-05-10 23:21:33.647241",
  "modified_by": "Administrator",
  "module": "X Electronics Warehouse Management System",
  "name": "Stock Entry",

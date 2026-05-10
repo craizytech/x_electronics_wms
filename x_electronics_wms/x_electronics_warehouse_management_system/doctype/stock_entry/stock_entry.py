@@ -17,6 +17,8 @@ class StockEntry(Document):
         from x_electronics_wms.x_electronics_warehouse_management_system.doctype.stock_entry_detail.stock_entry_detail import StockEntryDetail
 
         amended_from: DF.Link | None
+        default_source_wh: DF.Link | None
+        default_target_wh: DF.Link | None
         items: DF.Table[StockEntryDetail]
         posting_date: DF.Date
         posting_time: DF.Time | None
@@ -27,6 +29,7 @@ class StockEntry(Document):
 
     def validate(self):
         self.set_posting_time()
+        self.set_rates()
         self.validate_items()
         self.validate_warehouses()
 
@@ -77,6 +80,38 @@ class StockEntry(Document):
             is_group = frappe.db.get_value("Warehouse", wh, "is_group")
             if is_group:
                 frappe.throw(_(f"Warehouse '{wh}' is a group warehouse and cannot be used in transactions."))
+
+    @frappe.whitelist()
+    def set_rates(self):
+        """
+        Auto-populate valuation rates for
+        Consume and Transfer entries.
+
+        Receipt rates are user-entered.
+        """
+
+        # Receipt:
+        # user manually enters rates
+        if self.stock_entry_type == "Receipt":
+            return
+
+        for row in self.items:
+
+            if not row.item or not row.s_warehouse:
+                continue
+
+            valuation_method = frappe.db.get_value(
+                "Item",
+                row.item,
+                "valuation_method"
+            ) or "Moving Average"
+
+            row.rate = self._get_outgoing_rate(
+                row.item,
+                row.s_warehouse,
+                row.qty or 1,
+                valuation_method
+            )
 
     # Submit / Cancel
 
@@ -150,6 +185,7 @@ class StockEntry(Document):
         elif valuation_method == "LIFO":
             return self._lifo_rate(item, warehouse, qty)
         else:
+            frappe.log_error(f"Unknown valuation method: {valuation_method}", "Stock Entry")
             return self._moving_average_rate(item, warehouse)
 
     # Moving Average
@@ -177,122 +213,91 @@ class StockEntry(Document):
     
     def _fifo_rate(self, item, warehouse, qty_to_consume):
         """
-        Consume the oldest receipts first.
-
-        The ledger contains every receipt as a +ve qty change with its
-        original rate stored as valuation rate.
-
-        1. We fetch the all the receipts SLESs in chronological order (oldest first).
-        2. Fetch all the Consume and Transfer SLEs in chronological order
-        3. Walking through receipts oldest-first, subtracting consumptions to find
-            what qty is still available
-        4. Consume qty_to_consume from the oldest stock available.
-
-        This is stateless though computationaly expensive.
-        
+        FIFO: Consume oldest layers first.        
         """
+        if qty_to_consume <= 0:
+            return 0.0
 
-        # Step 1: Get all incoming stocks (receipts and transfer-ins) oldest first
+        # Get all incoming layers oldest first
         incoming_layers = frappe.db.sql("""
-            SELECT
-                name,
+            SELECT 
                 posting_datetime,
-                qty_change       AS qty,
-                valuation_rate   AS rate
+                qty_change AS qty,
+                valuation_rate AS rate
             FROM `tabStock Ledger Entry`
-            WHERE
-                item      = %(item)s
-                AND warehouse = %(warehouse)s
-                AND qty_change > 0
-                AND docstatus = 1
+            WHERE item = %(item)s
+              AND warehouse = %(warehouse)s
+              AND qty_change > 0
+              AND docstatus = 1
             ORDER BY posting_datetime ASC, creation ASC
         """, {"item": item, "warehouse": warehouse}, as_dict=True)
 
-        # Step 2: Get total already consumed (all outgoing movements)
+        # Get Total already consumed from this warehouse
         # We use the sum of negative qty_changes to know how much has left this warehouse
-        already_consumed = frappe.db.sql("""
+        consumed_result = frappe.db.sql("""
             SELECT COALESCE(SUM(qty_change), 0) AS total_out
             FROM `tabStock Ledger Entry`
-            WHERE
-                item      = %(item)s
-                AND warehouse = %(warehouse)s
-                AND qty_change < 0
-                AND docstatus = 1
+            WHERE item = %(item)s
+              AND warehouse = %(warehouse)s
+              AND qty_change < 0
+              AND docstatus = 1
         """, {"item": item, "warehouse": warehouse}, as_dict=True)
 
-        consumed_so_far = abs(already_consumed[0].total_out or 0.0)
+        already_consumed = abs(consumed_result[0].total_out) if consumed_result else 0.0
 
-        # Step 3: Walk through stock oldest-first, subtract already-consumed qty,
-        # then consume qty_to_consume from the remaining layers.
         return self._consume_layers_in_order(
-            incoming_layers, consumed_so_far, qty_to_consume
+            incoming_layers, already_consumed, qty_to_consume, item, warehouse
         )
     
     # LIFO: Last in First Out
     def _lifo_rate(self, item, warehouse, qty_to_consume):
         """
-        LIFO: consume latest receipts layers first.
+        LIFO: consume newest layers first.
         Same as FIFO except that the newest stock items are consumed first.
         """
         # Step 1: Get incoming stock newest first
         incoming_layers = frappe.db.sql("""
-            SELECT
-                name,
+            SELECT 
                 posting_datetime,
-                qty_change       AS qty,
-                valuation_rate   AS rate
+                qty_change AS qty,
+                valuation_rate AS rate
             FROM `tabStock Ledger Entry`
-            WHERE
-                item      = %(item)s
-                AND warehouse = %(warehouse)s
-                AND qty_change > 0
-                AND docstatus = 1
+            WHERE item = %(item)s
+              AND warehouse = %(warehouse)s
+              AND qty_change > 0
+              AND docstatus = 1
             ORDER BY posting_datetime DESC, creation DESC
         """, {"item": item, "warehouse": warehouse}, as_dict=True)
 
         # Step 2: Get total consumed by summing Transfers and consumes
-        already_consumed = frappe.db.sql("""
+        consumed_result = frappe.db.sql("""
             SELECT COALESCE(SUM(qty_change), 0) AS total_out
             FROM `tabStock Ledger Entry`
-            WHERE
-                item      = %(item)s
-                AND warehouse = %(warehouse)s
-                AND qty_change < 0
-                AND docstatus = 1
+            WHERE item = %(item)s
+              AND warehouse = %(warehouse)s
+              AND qty_change < 0
+              AND docstatus = 1
         """, {"item": item, "warehouse": warehouse}, as_dict=True)
 
         # For LIFO, "already consumed" means we've already consumed from the newest layers.
         # we have to subtract these first before finding what is still available
-        consumed_so_far = abs(already_consumed[0].total_out or 0.0)
+        already_consumed = abs(consumed_result[0].total_out) if consumed_result else 0.0
 
         return self._consume_layers_in_order(
-            incoming_layers, consumed_so_far, qty_to_consume
+            incoming_layers, already_consumed, qty_to_consume, item, warehouse
         )
     
     # Shared layer consumption logic for both fifo and lifo
 
-    def _consume_layers_in_order(self, layers, already_consumed, qty_to_consume):
+    def _consume_layers_in_order(self, layers, already_consumed, qty_to_consume, item, warehouse):
         """
-        Given a list of stock layers (in the order they should be consumed),
-        subtract `already_consumed` quantity first (stock that has already
-        left in previous transactions), then consume `qty_to_consume` from
-        what remains, and return the blended weighted average rate.
-
-        This is the core of the FIFO/LIFO stateless reconstruction algorithm.
-
-        Args:
-            layers:           list of dicts with keys: qty (float), rate (float)
-                              ordered in the consumption direction (oldest-first
-                              for FIFO, newest-first for LIFO)
-            already_consumed: how much has already been consumed from this
-                              warehouse in previous transactions
-            qty_to_consume:   how much we are consuming right now
-
-        Returns:
-            float: blended weighted average rate for qty_to_consume
+        Consume from layers in the given order (oldest first for FIFO, newest first for LIFO).
         """
-        remaining_to_subtract = already_consumed
-        remaining_to_consume = qty_to_consume
+        if qty_to_consume <= 0:
+            return 0.0
+        
+        remaining_to_subtract = float(already_consumed or 0)
+        remaining_to_consume = float(qty_to_consume or 0)
 
         total_value_consumed = 0.0
         total_qty_consumed = 0.0
@@ -304,13 +309,13 @@ class StockEntry(Document):
             if layer_qty <= 0:
                 continue
 
-            # Subtract already consumed stock from this layer
+            # remove already consumed stock from this layer
             if remaining_to_subtract > 0:
                 subtracted = min(layer_qty, remaining_to_subtract)
                 layer_qty -= subtracted
                 remaining_to_subtract -= subtracted
 
-            # Then consume from what remains in this layer
+            # Consume current request from remaining layer
             if layer_qty > 0 and remaining_to_consume > 0:
                 consumable = min(layer_qty, remaining_to_consume)
                 total_value_consumed += consumable * layer_rate
@@ -324,12 +329,8 @@ class StockEntry(Document):
         if total_qty_consumed > 0:
             return total_value_consumed / total_qty_consumed
         
-        # if layers were exhausted i.e in a -ve stock situation
-        # we fall bacl to moving avg to avoid division by 0
-        return self._moving_average_rate(
-            layers[0].get("item") if layers else "",
-            layers[0].get("warehouse") if layers else ""
-        ) if layers else 0.0
+        # Fallback when insufficient stock or no layers
+        return self._moving_average_rate(item, warehouse)
     
     # Shared SLE Creation method
 
@@ -419,3 +420,14 @@ class StockEntry(Document):
             sle = frappe.get_doc("Stock Ledger Entry", sle_name)
             sle.flags.ignore_permissions = True
             sle.cancel()
+
+    @frappe.whitelist()
+    def get_item_rate(self, item, s_warehouse, stock_entry_type):
+        """Return valuation rate for Consume/Transfer"""
+        if stock_entry_type == "Receipt" or not item or not s_warehouse:
+            return 0.0
+
+        valuation_method = frappe.db.get_value("Item", item, "valuation_method") or "Moving Average"
+
+        rate = self._get_outgoing_rate(item, s_warehouse, 1, valuation_method)
+        return rate

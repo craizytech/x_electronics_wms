@@ -421,13 +421,24 @@ class StockEntry(Document):
             sle.flags.ignore_permissions = True
             sle.cancel()
 
-    @frappe.whitelist()
-    def get_item_rate(self, item, s_warehouse, stock_entry_type):
-        """Return valuation rate for Consume/Transfer"""
-        if stock_entry_type == "Receipt" or not item or not s_warehouse:
-            return 0.0
 
-        valuation_method = frappe.db.get_value("Item", item, "valuation_method") or "Moving Average"
+@frappe.whitelist()
+def get_item_rate(
+    item: str,
+    s_warehouse: str,
+    stock_entry_type: str | None = None,
+    qty: float = 1
+) -> float:
+    """
+    Method to get item rate for a specific Item.
+    """
+    if stock_entry_type == "Receipt" or not item or not s_warehouse:
+        return 0.0
 
-        rate = self._get_outgoing_rate(item, s_warehouse, 1, valuation_method)
-        return rate
+    valuation_method = frappe.db.get_value(
+        "Item", item, "valuation_method"
+    ) or "Moving Average"
+
+    dummy = StockEntry({"doctype": "Stock Entry"})
+
+    return dummy._get_outgoing_rate(item, s_warehouse, float(qty or 1), valuation_method)

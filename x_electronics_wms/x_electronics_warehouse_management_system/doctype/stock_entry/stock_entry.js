@@ -1,7 +1,10 @@
+// Copyright (c) 2026
+// For license information, please see license.txt
 
 frappe.ui.form.on("Stock Entry", {
 
     setup(frm) {
+
         if (frm.is_new()) {
 
             if (!frm.doc.posting_date) {
@@ -48,6 +51,13 @@ frappe.ui.form.on("Stock Entry", {
                     "s_warehouse",
                     null
                 );
+
+                frappe.model.set_value(
+                    row.doctype,
+                    row.name,
+                    "rate",
+                    null
+                );
             }
 
             // Consume:
@@ -61,11 +71,17 @@ frappe.ui.form.on("Stock Entry", {
                     null
                 );
             }
+
+            // Re-evaluate row rate
+            fetch_rate_for_row(
+                frm,
+                row.doctype,
+                row.name
+            );
         });
 
         frm.refresh_field("items");
     },
-
 
     // Propagate changed defaults
 
@@ -83,6 +99,12 @@ frappe.ui.form.on("Stock Entry", {
                     row.name,
                     "s_warehouse",
                     frm.doc.default_source_wh
+                );
+
+                fetch_rate_for_row(
+                    frm,
+                    row.doctype,
+                    row.name
                 );
             }
         });
@@ -115,21 +137,49 @@ frappe.ui.form.on("Stock Entry", {
 frappe.ui.form.on("Stock Entry Detail", {
 
     items_add(frm, cdt, cdn) {
-        const row = locals[cdt][cdn];
 
         if (frm.doc.stock_entry_type === "Receipt") {
-            frappe.model.set_value(cdt, cdn, "t_warehouse", frm.doc.default_target_wh);
+
+            frappe.model.set_value(
+                cdt,
+                cdn,
+                "t_warehouse",
+                frm.doc.default_target_wh
+            );
         }
+
         else if (frm.doc.stock_entry_type === "Consume") {
-            frappe.model.set_value(cdt, cdn, "s_warehouse", frm.doc.default_source_wh);
+
+            frappe.model.set_value(
+                cdt,
+                cdn,
+                "s_warehouse",
+                frm.doc.default_source_wh
+            );
         }
+
         else if (frm.doc.stock_entry_type === "Transfer") {
-            frappe.model.set_value(cdt, cdn, "s_warehouse", frm.doc.default_source_wh);
-            frappe.model.set_value(cdt, cdn, "t_warehouse", frm.doc.default_target_wh);
+
+            frappe.model.set_value(
+                cdt,
+                cdn,
+                "s_warehouse",
+                frm.doc.default_source_wh
+            );
+
+            frappe.model.set_value(
+                cdt,
+                cdn,
+                "t_warehouse",
+                frm.doc.default_target_wh
+            );
         }
+
+        fetch_rate_for_row(frm, cdt, cdn);
     },
 
-    // ==================== AUTO FETCH RATE ====================
+    // REACTIVE RATE FETCHING
+
     item(frm, cdt, cdn) {
         fetch_rate_for_row(frm, cdt, cdn);
     },
@@ -140,27 +190,33 @@ frappe.ui.form.on("Stock Entry Detail", {
 });
 
 
-// Rate Fetching Function
+
+// RATE FETCHING
+
 function fetch_rate_for_row(frm, cdt, cdn) {
+
     const row = locals[cdt][cdn];
     const type = frm.doc.stock_entry_type;
 
-    // Only auto-fetch for Consume and Transfer
-    if (type === "Receipt" || !row.item || !row.s_warehouse) {
+    if (type === "Receipt") {
+        frappe.model.set_value(cdt, cdn, "rate", null);
         return;
     }
 
-    // Call server method
+    if (!row.item || !row.s_warehouse) {
+        return;
+    }
+
     frappe.call({
-        method: "get_item_rate",           // since it's in StockEntry class
-        doc: frm.doc,                      // Important: passes self
+        method: "x_electronics_wms.x_electronics_warehouse_management_system.doctype.stock_entry.stock_entry.get_item_rate",
         args: {
             item: row.item,
             s_warehouse: row.s_warehouse,
-            stock_entry_type: type
+            stock_entry_type: type,
+            qty: row.qty || 1
         },
-        callback: function(r) {
-            if (r.message) {
+        callback(r) {
+            if (r.message !== undefined) {
                 frappe.model.set_value(cdt, cdn, "rate", r.message);
             }
         }
@@ -170,33 +226,71 @@ function fetch_rate_for_row(frm, cdt, cdn) {
 
 
 // UI STATE CONTROLLER
-
 function apply_stock_entry_ui_state(frm) {
+
     const type = frm.doc.stock_entry_type || "";
-    
+
     const is_receipt = type === "Receipt";
     const is_consume = type === "Consume";
-    // Transfer shows both
 
     const grid = frm.fields_dict.items.grid;
 
-    // Updating the parent
-    frm.set_df_property("default_source_wh", "hidden", is_receipt);
-    frm.set_df_property("default_target_wh", "hidden", is_consume);
+    // Parent fields
 
-    // updating child
-    grid.update_docfield_property("s_warehouse", "hidden", is_receipt ? 1 : 0);
-    grid.update_docfield_property("t_warehouse", "hidden", is_consume ? 1 : 0);
+    frm.set_df_property(
+        "default_source_wh",
+        "hidden",
+        is_receipt
+    );
 
-    // rate field
-    grid.update_docfield_property("rate", "read_only", is_receipt ? 0 : 1);
-    grid.update_docfield_property("rate", "reqd", is_receipt ? 1 : 0);
+    frm.set_df_property(
+        "default_target_wh",
+        "hidden",
+        is_consume
+    );
+
+    // Child fields
+
+    grid.update_docfield_property(
+        "s_warehouse",
+        "hidden",
+        is_receipt ? 1 : 0
+    );
+
+    grid.update_docfield_property(
+        "t_warehouse",
+        "hidden",
+        is_consume ? 1 : 0
+    );
+
+    // Rate field behavior
+
+    grid.update_docfield_property(
+        "rate",
+        "read_only",
+        is_receipt ? 0 : 1
+    );
+
+    grid.update_docfield_property(
+        "rate",
+        "reqd",
+        is_receipt ? 1 : 0
+    );
 
     frm.refresh_field("items");
-    
-    if (grid.refresh) grid.refresh();
-    if (grid.reset_grid) grid.reset_grid();
-    
-    // Refresh parent fields too
-    frm.refresh_fields(["default_source_wh", "default_target_wh"]);
+
+    if (grid.refresh) {
+        grid.refresh();
+    }
+
+    if (grid.reset_grid) {
+        grid.reset_grid();
+    }
+
+    frm.refresh_fields([
+        "default_source_wh",
+        "default_target_wh"
+    ]);
 }
+
+
